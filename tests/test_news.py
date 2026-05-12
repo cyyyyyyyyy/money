@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from money_strategy.news import append_candidates_to_sentiment, score_news_item
+from money_strategy.news import append_candidates_to_sentiment, fetch_akshare_candidates, score_news_item
 
 
 def test_score_news_item_detects_policy_and_themes() -> None:
@@ -60,3 +60,53 @@ def test_append_candidates_to_sentiment_deduplicates_by_source_url(tmp_path: Pat
 
     assert len(result) == 1
     assert path.exists()
+
+
+def test_fetch_akshare_candidates_scores_market_hotspots() -> None:
+    class FakeAk:
+        @staticmethod
+        def stock_info_global_cls():
+            return pd.DataFrame(
+                [
+                    {
+                        "标题": "人工智能产业政策持续推进",
+                        "内容": "支持大模型和算力基础设施发展",
+                        "发布日期": "2026-05-12",
+                        "发布时间": "09:30:00",
+                    }
+                ]
+            )
+
+        @staticmethod
+        def stock_hot_keyword_em():
+            return pd.DataFrame(
+                [
+                    {
+                        "时间": "2026-05-12 10:00:00",
+                        "股票代码": "SZ000001",
+                        "概念名称": "算力概念",
+                        "概念代码": "BK1134",
+                        "热度": 100,
+                    }
+                ]
+            )
+
+        @staticmethod
+        def stock_hot_rank_em():
+            return pd.DataFrame(
+                [
+                    {
+                        "当前排名": 1,
+                        "代码": "SZ000001",
+                        "股票名称": "人工智能",
+                        "最新价": 10,
+                        "涨跌额": 1,
+                        "涨跌幅": 10,
+                    }
+                ]
+            )
+
+    result = fetch_akshare_candidates(cutoff=pd.Timestamp("2026-05-01").date(), min_policy_score=58, ak=FakeAk)
+
+    assert result
+    assert any(candidate.source.startswith("AkShare") for candidate in result)

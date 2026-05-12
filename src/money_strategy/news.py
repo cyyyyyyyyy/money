@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import re
+import hashlib
+from collections import Counter
 from dataclasses import asdict, dataclass
 from datetime import date, timedelta
 from pathlib import Path
@@ -48,9 +50,13 @@ def refresh_news_candidates(
     days: int = 30,
     min_policy_score: int = 58,
     timeout: int = 20,
+    include_akshare: bool = True,
 ) -> pd.DataFrame:
     cutoff = date.today() - timedelta(days=days)
     rows = []
+    if include_akshare:
+        rows.extend(asdict(candidate) for candidate in fetch_akshare_candidates(cutoff=cutoff, min_policy_score=min_policy_score))
+
     for item in fetch_gov_pushinfo(timeout=timeout):
         pub_date = _parse_date(item.get("pubDate", ""))
         if pub_date is None or pub_date < cutoff:
@@ -69,6 +75,96 @@ def refresh_news_candidates(
     if frame.empty:
         return pd.DataFrame(columns=[*SENTIMENT_COLUMNS, "source", "title"])
     return frame.drop_duplicates(subset=["source_url"]).sort_values(["date", "policy_score"], ascending=[False, False])
+
+
+def fetch_akshare_candidates(*, cutoff: date, min_policy_score: int = 58, ak=None) -> list[NewsCandidate]:
+    candidates: list[NewsCandidate] = []
+    if ak is None:
+        try:
+            import akshare as ak
+        except ImportError:
+            return candidates
+
+    candidates.extend(_akshare_cls_candidates(ak, cutoff=cutoff, min_policy_score=min_policy_score))
+    candidates.extend(_akshare_hot_keyword_candidates(ak, min_policy_score=min_policy_score))
+    candidates.extend(_akshare_hot_rank_candidates(ak, min_policy_score=min_policy_score))
+    return candidates
+
+
+def _akshare_cls_candidates(ak, *, cutoff: date, min_policy_score: int) -> list[NewsCandidate]:
+    rows: list[NewsCandidate] = []
+    try:
+        frame = ak.stock_info_global_cls()
+    except Exception:
+        return rows
+    if frame is None or frame.empty:
+        return rows
+
+    for _, row in frame.head(200).iterrows():
+        pub_date = _parse_date(str(row.get("发布日期", "")))
+        if pub_date is None or pub_date < cutoff:
+            continue
+        title = str(row.get("标题") or "")
+        content = str(row.get("内容") or "")
+        publish_time = str(row.get("发布时间") or "")
+        source_url = f"akshare://stock_info_global_cls/{pub_date.isoformat()}/{publish_time}/{_stable_id(title + content)}"
+        candidate = score_news_item(
+            pub_date.isoformat(),
+            title,
+            content,
+            source_url,
+            source="AkShare-财联社",
+        )
+        if candidate and candidate.policy_score >= min_policy_score and _is_a_share_relevant(title + content, candidate):
+            rows.append(candidate)
+    return rows
+
+
+def _akshare_hot_keyword_candidates(ak, *, min_policy_score: int) -> list[NewsCandidate]:
+    try:
+        frame = ak.stock_hot_keyword_em()
+    except Exception:
+        return []
+    if frame is None or frame.empty or "概念名称" not in frame.columns:
+        return []
+
+    date_text = _latest_date_text(frame.get("时间"))
+    concepts = frame["概念名称"].dropna().astype(str).tolist()
+    counter = Counter(concepts)
+    rows: list[NewsCandidate] = []
+    for concept, count in counter.most_common(20):
+        heat = pd.to_numeric(frame.loc[frame["概念名称"] == concept, "热度"], errors="coerce").fillna(0).sum()
+        description = f"东方财富热度概念 {concept} 出现 {count} 次，合计热度 {int(heat)}"
+        candidate = score_news_item(
+            date_text,
+            f"市场热点：{concept}",
+            description,
+            f"akshare://stock_hot_keyword_em/{date_text}/{concept}",
+            source="AkShare-东方财富热词",
+        )
+        if candidate and candidate.policy_score >= min_policy_score:
+            rows.append(candidate)
+    return rows
+
+
+def _akshare_hot_rank_candidates(ak, *, min_policy_score: int) -> list[NewsCandidate]:
+    try:
+        frame = ak.stock_hot_rank_em()
+    except Exception:
+        return []
+    if frame is None or frame.empty or "股票名称" not in frame.columns:
+        return []
+
+    date_text = date.today().isoformat()
+    text = "、".join(frame.head(30)["股票名称"].dropna().astype(str).tolist())
+    candidate = score_news_item(
+        date_text,
+        "东方财富个股人气榜 TOP30",
+        text,
+        f"akshare://stock_hot_rank_em/{date_text}",
+        source="AkShare-东方财富人气榜",
+    )
+    return [candidate] if candidate and candidate.policy_score >= min_policy_score else []
 
 
 def fetch_gov_pushinfo(*, timeout: int = 20) -> list[dict[str, str]]:
@@ -190,12 +286,57 @@ def _parse_date(value: str) -> date | None:
     return parsed.date()
 
 
+def _latest_date_text(values) -> str:
+    if values is None:
+        return date.today().isoformat()
+    parsed = pd.to_datetime(values, errors="coerce")
+    parsed = parsed.dropna() if hasattr(parsed, "dropna") else parsed
+    if len(parsed) == 0:
+        return date.today().isoformat()
+    return parsed.max().date().isoformat()
+
+
 def _has_any(text: str, keywords: list[str]) -> bool:
     return any(keyword in text for keyword in keywords)
 
 
 def _count_hits(text: str, keywords: list[str]) -> int:
     return sum(1 for keyword in keywords if keyword in text)
+
+
+def _is_a_share_relevant(text: str, candidate: NewsCandidate) -> bool:
+    if any(
+        getattr(candidate, column) > 50
+        for column in (
+            "theme_score_159819",
+            "theme_score_512480",
+            "theme_score_159770",
+            "theme_score_516160",
+            "theme_score_561560",
+            "theme_score_563530",
+        )
+    ):
+        return True
+    return _has_any(
+        text,
+        [
+            "A股",
+            "沪深",
+            "创业板",
+            "科创板",
+            "资本市场",
+            "股票市场",
+            "证监会",
+            "中国人民银行",
+            "国务院",
+            "发改委",
+            "中长期资金",
+        ],
+    )
+
+
+def _stable_id(text: str) -> str:
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()[:16]
 
 
 def _compact_note(text: str, limit: int = 80) -> str:
