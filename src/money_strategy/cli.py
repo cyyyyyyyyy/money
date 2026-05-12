@@ -10,6 +10,7 @@ import matplotlib.pyplot as plt
 from .backtest import run_backtest
 from .config import ALL_INSTRUMENTS, DEFAULT_COST_BPS
 from .data import load_universe, make_amount_panel, make_close_panel, to_weekly
+from .news import append_candidates_to_sentiment, refresh_news_candidates, write_news_candidates
 from .optimizer import evaluate_grid, walk_forward_optimize
 from .sentiment import load_sentiment_scores
 from .signals import build_signal_frame
@@ -45,6 +46,9 @@ def main() -> None:
         "--sentiment-file",
         help="Optional CSV with date,news_score,policy_score columns. Scores are 0-100, 50 neutral.",
     )
+    backtest.add_argument("--refresh-news", action="store_true", help="Fetch latest official policy/news candidates")
+    backtest.add_argument("--apply-news", action="store_true", help="Append fetched candidates to sentiment file")
+    backtest.add_argument("--news-days", type=int, default=30)
 
     signal = subparsers.add_parser("signal", help="Print latest stable single-position signal")
     signal.add_argument("--start", default="2018-01-01")
@@ -67,6 +71,9 @@ def main() -> None:
         default="data/policy_events.real.csv",
         help="CSV with date,news_score,policy_score and optional theme scores.",
     )
+    signal.add_argument("--refresh-news", action="store_true", help="Fetch latest official policy/news candidates")
+    signal.add_argument("--apply-news", action="store_true", help="Append fetched candidates to sentiment file")
+    signal.add_argument("--news-days", type=int, default=30)
 
     optimize = subparsers.add_parser("optimize", help="Run parameter grid and walk-forward optimization")
     optimize.add_argument("--start", default="2018-01-01")
@@ -79,9 +86,26 @@ def main() -> None:
     optimize.add_argument("--train-weeks", type=int, default=52)
     optimize.add_argument("--test-weeks", type=int, default=13)
 
+    news = subparsers.add_parser("refresh-news", help="Fetch official policy/news candidates")
+    news.add_argument("--sentiment-file", default="data/policy_events.real.csv")
+    news.add_argument("--candidates-file", default="data/news_candidates.csv")
+    news.add_argument("--days", type=int, default=30)
+    news.add_argument("--apply", action="store_true", help="Append candidates to sentiment file")
+
     args = parser.parse_args()
-    if args.command not in {"backtest", "optimize", "signal"}:
+    if args.command not in {"backtest", "optimize", "signal", "refresh-news"}:
         parser.print_help()
+        return
+
+    if args.command == "refresh-news":
+        candidates = refresh_news_candidates(days=args.days)
+        write_news_candidates(candidates, Path(args.candidates_file))
+        print(f"Fetched {len(candidates)} candidates -> {Path(args.candidates_file).resolve()}")
+        if args.apply:
+            combined = append_candidates_to_sentiment(candidates, Path(args.sentiment_file))
+            print(f"Updated {Path(args.sentiment_file).resolve()} rows={len(combined)}")
+        if not candidates.empty:
+            print(candidates[["date", "policy_score", "news_score", "title", "source_url"]].head(20).to_string(index=False))
         return
 
     output_dir = Path(args.output_dir)
@@ -118,6 +142,15 @@ def main() -> None:
             print(walk.filter(regex="^(fold|test_start|test_end|param_|test_annual_return|test_max_drawdown|test_sharpe|test_score)").round(4).to_string(index=False))
         print(f"\nWrote optimization outputs to {output_dir.resolve()}")
         return
+
+    if getattr(args, "refresh_news", False):
+        sentiment_file = Path(args.sentiment_file) if getattr(args, "sentiment_file", None) else Path("data/policy_events.real.csv")
+        candidates = refresh_news_candidates(days=args.news_days)
+        candidates_file = output_dir / "news_candidates.csv"
+        write_news_candidates(candidates, candidates_file)
+        if getattr(args, "apply_news", False):
+            append_candidates_to_sentiment(candidates, sentiment_file)
+        print(f"Fetched {len(candidates)} official news candidates -> {candidates_file.resolve()}")
 
     news_sentiment = (
         load_sentiment_scores(Path(args.sentiment_file), weekly_close.index)
