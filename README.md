@@ -44,21 +44,21 @@ uv run money-strategy backtest --start 2018-01-01 --end 2026-05-12
 - 防守档阈值：`35`
 - 均衡档转防守阈值：`45`
 - 档位确认：`1` 周
-- 新闻权重：`0.03`
-- 政策权重：`0.05`
-- 主题权重：`0.06`
+- 新闻权重：`0.03`，仅在显式提供事件表时生效。
+- 政策权重：`0.05`，仅在显式提供事件表时生效。
+- 主题权重：`0.06`，仅在显式提供事件表时生效。
 
 ```bash
 uv run money-strategy backtest
 ```
 
-可选接入新闻/舆情分：
+历史回测默认不使用热点事件表，避免用当前热点污染历史样本。可选接入新闻/舆情分：
 
 ```bash
 uv run money-strategy backtest --sentiment-file data/sentiment.csv
 ```
 
-项目内置的事件表默认由 AkShare 热点候选审核生成：
+项目内置的事件表由 AkShare 热点候选审核生成，建议只在实盘信号或指定场景中使用：
 
 ```bash
 uv run money-strategy backtest --sentiment-file data/policy_events.real.csv
