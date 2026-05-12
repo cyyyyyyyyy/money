@@ -79,6 +79,22 @@ scripts/run_stable_signal.sh 2026-05-12
 该命令会输出并写入 `output/stable_signal/latest_signal.json`。
 运行时会用 AkShare 自动拉取市场热点候选，写入 `output/stable_signal/news_candidates.csv`；默认不直接改仓，避免未经审核的热点噪声进入实盘信号。
 
+启动 Web 面板：
+
+```bash
+scripts/run_web_dashboard.sh 2026-05-12
+```
+
+面板使用 Vite + React，并用专业行情图表展示策略净值、沪深 300 和防守基准；同时展示回测指标、回撤、持仓分布、最近交易、当前因子和 AkShare 热点候选。默认访问地址是 `http://127.0.0.1:5173`。
+
+严谨性验证：
+
+```bash
+uv run money-strategy validate --start 2018-01-01 --end 2026-05-12
+```
+
+验证报告会写入 `validation_report.json` 和 `validation_summary.csv`，包括实际有效样本区间、样本年限、手续费、是否使用情绪事件表、前后段固定参数验证，以及样本过短、起点被新 ETF 数据推后、换手偏高等风险提示。默认回测也会同步输出这两份文件。
+
 单独刷新 AkShare 热点候选：
 
 ```bash

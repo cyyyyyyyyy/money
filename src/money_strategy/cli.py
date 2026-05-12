@@ -11,9 +11,10 @@ from .backtest import run_backtest
 from .config import ALL_INSTRUMENTS, DEFAULT_COST_BPS
 from .data import load_universe, make_amount_panel, make_close_panel, to_weekly
 from .news import append_candidates_to_sentiment, refresh_hotspot_candidates, write_news_candidates
-from .optimizer import evaluate_grid, walk_forward_optimize
+from .optimizer import StrategyParams, evaluate_grid, walk_forward_optimize
 from .sentiment import load_sentiment_scores
 from .signals import build_signal_frame
+from .validation import build_validation_report, write_validation_outputs
 
 
 def main() -> None:
@@ -50,6 +51,7 @@ def main() -> None:
     backtest.add_argument("--apply-news", action="store_true", help="Append fetched candidates to sentiment file")
     backtest.add_argument("--news-days", type=int, default=30)
     backtest.add_argument("--include-policy-news", action="store_true", help="Also include gov.cn policy candidates")
+    backtest.add_argument("--min-validation-years", type=float, default=5.0)
 
     signal = subparsers.add_parser("signal", help="Print latest stable single-position signal")
     signal.add_argument("--start", default="2018-01-01")
@@ -88,6 +90,25 @@ def main() -> None:
     optimize.add_argument("--train-weeks", type=int, default=52)
     optimize.add_argument("--test-weeks", type=int, default=13)
 
+    validate = subparsers.add_parser("validate", help="Run bias-aware validation report for the fixed strategy")
+    validate.add_argument("--start", default="2018-01-01")
+    validate.add_argument("--end", default=default_end)
+    validate.add_argument("--cache-dir", default="data/cache")
+    validate.add_argument("--output-dir", default="output/validation")
+    validate.add_argument("--refresh", action="store_true", help="Refresh cached market data")
+    validate.add_argument("--strict-data", action="store_true", help="Fail if any instrument cannot be loaded")
+    validate.add_argument("--cost-bps", type=float, default=DEFAULT_COST_BPS)
+    validate.add_argument("--switch-threshold", type=float, default=0.15)
+    validate.add_argument("--offense-threshold", type=float, default=60.0)
+    validate.add_argument("--defense-threshold", type=float, default=35.0)
+    validate.add_argument("--balanced-defensive-threshold", type=float, default=45.0)
+    validate.add_argument("--confirm-weeks", type=int, default=1)
+    validate.add_argument("--news-weight", type=float, default=0.03)
+    validate.add_argument("--policy-weight", type=float, default=0.05)
+    validate.add_argument("--theme-weight", type=float, default=0.06)
+    validate.add_argument("--sentiment-file", help="Optional point-in-time sentiment CSV")
+    validate.add_argument("--min-validation-years", type=float, default=5.0)
+
     news = subparsers.add_parser("refresh-news", help="Fetch AkShare market hotspot candidates")
     news.add_argument("--sentiment-file", default="data/policy_events.real.csv")
     news.add_argument("--candidates-file", default="data/news_candidates.csv")
@@ -96,7 +117,7 @@ def main() -> None:
     news.add_argument("--include-policy-news", action="store_true", help="Also include gov.cn policy candidates")
 
     args = parser.parse_args()
-    if args.command not in {"backtest", "optimize", "signal", "refresh-news"}:
+    if args.command not in {"backtest", "optimize", "signal", "refresh-news", "validate"}:
         parser.print_help()
         return
 
@@ -160,22 +181,44 @@ def main() -> None:
         if getattr(args, "sentiment_file", None)
         else None
     )
+    strategy_params = StrategyParams(
+        switch_threshold=args.switch_threshold,
+        offense_threshold=args.offense_threshold,
+        defense_threshold=args.defense_threshold,
+        balanced_defensive_threshold=args.balanced_defensive_threshold,
+        confirm_weeks=args.confirm_weeks,
+    )
     signals = build_signal_frame(
         daily_close,
         daily_amount,
         weekly_close,
         weekly_amount,
         news_sentiment,
-        switch_threshold=args.switch_threshold,
-        offense_threshold=args.offense_threshold,
-        defense_threshold=args.defense_threshold,
-        balanced_defensive_threshold=args.balanced_defensive_threshold,
-        confirm_weeks=args.confirm_weeks,
+        switch_threshold=strategy_params.switch_threshold,
+        offense_threshold=strategy_params.offense_threshold,
+        defense_threshold=strategy_params.defense_threshold,
+        balanced_defensive_threshold=strategy_params.balanced_defensive_threshold,
+        confirm_weeks=strategy_params.confirm_weeks,
         news_weight=args.news_weight,
         policy_weight=args.policy_weight,
         theme_weight=args.theme_weight,
     )
     result = run_backtest(weekly_close, signals, cost_bps=args.cost_bps)
+    validation_report = build_validation_report(
+        result,
+        weekly_close,
+        requested_start=args.start,
+        requested_end=args.end,
+        cost_bps=args.cost_bps,
+        sentiment_file=getattr(args, "sentiment_file", None),
+        params={
+            **strategy_params.__dict__,
+            "news_weight": args.news_weight,
+            "policy_weight": args.policy_weight,
+            "theme_weight": args.theme_weight,
+        },
+        min_years=args.min_validation_years if hasattr(args, "min_validation_years") else 5.0,
+    )
 
     if args.command == "signal":
         payload = _latest_signal_payload(result.signals, result.performance)
@@ -187,10 +230,18 @@ def main() -> None:
         print(f"\nWrote latest signal to {(output_dir / 'latest_signal.json').resolve()}")
         return
 
+    if args.command == "validate":
+        write_validation_outputs(validation_report, output_dir)
+        print("Validation report:")
+        print(json.dumps(validation_report, ensure_ascii=False, indent=2))
+        print(f"\nWrote validation outputs to {output_dir.resolve()}")
+        return
+
     result.signals.to_csv(output_dir / "weekly_signals.csv", index_label="date")
     result.equity_curve.to_csv(output_dir / "equity_curve.csv", index_label="date")
     result.performance.to_csv(output_dir / "performance.csv")
     result.trades.to_csv(output_dir / "trades.csv", index=False)
+    write_validation_outputs(validation_report, output_dir)
     _plot_equity(result.equity_curve, output_dir / "equity_curve.png")
 
     print(result.performance.round(4).to_string())

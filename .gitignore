@@ -7,5 +7,8 @@ __pycache__/
 data/cache/
 data/*.backup.*.csv
 output/
+web/node_modules/
+web/dist/
+web/public/output/
 
 .DS_Store
