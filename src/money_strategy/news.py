@@ -45,36 +45,42 @@ class NewsCandidate:
     title: str
 
 
-def refresh_news_candidates(
+def refresh_hotspot_candidates(
     *,
     days: int = 30,
     min_policy_score: int = 58,
     timeout: int = 20,
     include_akshare: bool = True,
+    include_policy: bool = True,
 ) -> pd.DataFrame:
     cutoff = date.today() - timedelta(days=days)
     rows = []
     if include_akshare:
         rows.extend(asdict(candidate) for candidate in fetch_akshare_candidates(cutoff=cutoff, min_policy_score=min_policy_score))
 
-    for item in fetch_gov_pushinfo(timeout=timeout):
-        pub_date = _parse_date(item.get("pubDate", ""))
-        if pub_date is None or pub_date < cutoff:
-            continue
-        candidate = score_news_item(
-            pub_date.isoformat(),
-            str(item.get("title") or ""),
-            str(item.get("description") or ""),
-            str(item.get("link") or ""),
-            source=str(item.get("author") or "中国政府网"),
-        )
-        if candidate and candidate.policy_score >= min_policy_score:
-            rows.append(asdict(candidate))
+    if include_policy:
+        for item in fetch_gov_pushinfo(timeout=timeout):
+            pub_date = _parse_date(item.get("pubDate", ""))
+            if pub_date is None or pub_date < cutoff:
+                continue
+            candidate = score_news_item(
+                pub_date.isoformat(),
+                str(item.get("title") or ""),
+                str(item.get("description") or ""),
+                str(item.get("link") or ""),
+                source=str(item.get("author") or "中国政府网"),
+            )
+            if candidate and candidate.policy_score >= min_policy_score:
+                rows.append(asdict(candidate))
 
     frame = pd.DataFrame(rows)
     if frame.empty:
         return pd.DataFrame(columns=[*SENTIMENT_COLUMNS, "source", "title"])
     return frame.drop_duplicates(subset=["source_url"]).sort_values(["date", "policy_score"], ascending=[False, False])
+
+
+def refresh_news_candidates(**kwargs) -> pd.DataFrame:
+    return refresh_hotspot_candidates(**kwargs)
 
 
 def fetch_akshare_candidates(*, cutoff: date, min_policy_score: int = 58, ak=None) -> list[NewsCandidate]:
@@ -179,6 +185,9 @@ def fetch_gov_pushinfo(*, timeout: int = 20) -> list[dict[str, str]]:
 
 def score_news_item(date_text: str, title: str, description: str, url: str, *, source: str) -> NewsCandidate | None:
     text = f"{title} {description}"
+    if _has_any(text, ["风险提示", "高于行业平均", "澄清公告", "异常波动公告", "监管函", "问询函"]):
+        return None
+
     policy_score = 50
     news_score = 50
     themes = {

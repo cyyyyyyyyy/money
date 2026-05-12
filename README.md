@@ -76,12 +76,18 @@ scripts/run_stable_signal.sh 2026-05-12
 ```
 
 该命令会输出并写入 `output/stable_signal/latest_signal.json`。
-运行时会自动拉取官方政策/新闻候选，写入 `output/stable_signal/news_candidates.csv`；默认不直接改仓，避免未经审核的新闻噪声进入实盘信号。
+运行时会用 AkShare 自动拉取市场热点候选，写入 `output/stable_signal/news_candidates.csv`；默认不直接改仓，避免未经审核的热点噪声进入实盘信号。
 
-单独刷新新闻候选：
+单独刷新 AkShare 热点候选：
 
 ```bash
 uv run money-strategy refresh-news --days 30
+```
+
+如需同时拉取中国政府网政策候选：
+
+```bash
+uv run money-strategy refresh-news --days 30 --include-policy-news
 ```
 
 审核后写入策略事件表：
@@ -99,7 +105,7 @@ date,news_score,policy_score,theme_score_159819,theme_score_512480,theme_score_1
 ```
 
 主题分列是可选的，格式为 `theme_score_<ETF代码>`；提供后会小幅影响对应 ETF 的轮动因子分。
-新闻热点不会无记录自动改仓；每次运行可拉取候选，审核后写入 CSV，回测和实盘信号都会留下同一套事件输入。
+新闻热点默认使用 AkShare 拉取候选，不会无记录自动改仓；审核后写入 CSV，回测和实盘信号都会留下同一套事件输入。
 
 输出会写入 `output/`：
 

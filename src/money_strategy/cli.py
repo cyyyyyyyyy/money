@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 from .backtest import run_backtest
 from .config import ALL_INSTRUMENTS, DEFAULT_COST_BPS
 from .data import load_universe, make_amount_panel, make_close_panel, to_weekly
-from .news import append_candidates_to_sentiment, refresh_news_candidates, write_news_candidates
+from .news import append_candidates_to_sentiment, refresh_hotspot_candidates, write_news_candidates
 from .optimizer import evaluate_grid, walk_forward_optimize
 from .sentiment import load_sentiment_scores
 from .signals import build_signal_frame
@@ -46,9 +46,10 @@ def main() -> None:
         "--sentiment-file",
         help="Optional CSV with date,news_score,policy_score columns. Scores are 0-100, 50 neutral.",
     )
-    backtest.add_argument("--refresh-news", action="store_true", help="Fetch latest official policy/news candidates")
+    backtest.add_argument("--refresh-news", action="store_true", help="Fetch latest AkShare hotspot candidates")
     backtest.add_argument("--apply-news", action="store_true", help="Append fetched candidates to sentiment file")
     backtest.add_argument("--news-days", type=int, default=30)
+    backtest.add_argument("--include-policy-news", action="store_true", help="Also include gov.cn policy candidates")
 
     signal = subparsers.add_parser("signal", help="Print latest stable single-position signal")
     signal.add_argument("--start", default="2018-01-01")
@@ -71,9 +72,10 @@ def main() -> None:
         default="data/policy_events.real.csv",
         help="CSV with date,news_score,policy_score and optional theme scores.",
     )
-    signal.add_argument("--refresh-news", action="store_true", help="Fetch latest official policy/news candidates")
+    signal.add_argument("--refresh-news", action="store_true", help="Fetch latest AkShare hotspot candidates")
     signal.add_argument("--apply-news", action="store_true", help="Append fetched candidates to sentiment file")
     signal.add_argument("--news-days", type=int, default=30)
+    signal.add_argument("--include-policy-news", action="store_true", help="Also include gov.cn policy candidates")
 
     optimize = subparsers.add_parser("optimize", help="Run parameter grid and walk-forward optimization")
     optimize.add_argument("--start", default="2018-01-01")
@@ -86,11 +88,12 @@ def main() -> None:
     optimize.add_argument("--train-weeks", type=int, default=52)
     optimize.add_argument("--test-weeks", type=int, default=13)
 
-    news = subparsers.add_parser("refresh-news", help="Fetch official policy/news candidates")
+    news = subparsers.add_parser("refresh-news", help="Fetch AkShare market hotspot candidates")
     news.add_argument("--sentiment-file", default="data/policy_events.real.csv")
     news.add_argument("--candidates-file", default="data/news_candidates.csv")
     news.add_argument("--days", type=int, default=30)
     news.add_argument("--apply", action="store_true", help="Append candidates to sentiment file")
+    news.add_argument("--include-policy-news", action="store_true", help="Also include gov.cn policy candidates")
 
     args = parser.parse_args()
     if args.command not in {"backtest", "optimize", "signal", "refresh-news"}:
@@ -98,7 +101,7 @@ def main() -> None:
         return
 
     if args.command == "refresh-news":
-        candidates = refresh_news_candidates(days=args.days)
+        candidates = refresh_hotspot_candidates(days=args.days, include_policy=args.include_policy_news)
         write_news_candidates(candidates, Path(args.candidates_file))
         print(f"Fetched {len(candidates)} candidates -> {Path(args.candidates_file).resolve()}")
         if args.apply:
@@ -145,12 +148,12 @@ def main() -> None:
 
     if getattr(args, "refresh_news", False):
         sentiment_file = Path(args.sentiment_file) if getattr(args, "sentiment_file", None) else Path("data/policy_events.real.csv")
-        candidates = refresh_news_candidates(days=args.news_days)
+        candidates = refresh_hotspot_candidates(days=args.news_days, include_policy=args.include_policy_news)
         candidates_file = output_dir / "news_candidates.csv"
         write_news_candidates(candidates, candidates_file)
         if getattr(args, "apply_news", False):
             append_candidates_to_sentiment(candidates, sentiment_file)
-        print(f"Fetched {len(candidates)} official news candidates -> {candidates_file.resolve()}")
+        print(f"Fetched {len(candidates)} AkShare hotspot candidates -> {candidates_file.resolve()}")
 
     news_sentiment = (
         load_sentiment_scores(Path(args.sentiment_file), weekly_close.index)
