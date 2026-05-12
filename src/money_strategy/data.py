@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Iterable
 
@@ -31,6 +32,101 @@ KLINE_COLUMNS = [
 
 class DataError(RuntimeError):
     pass
+
+
+def fetch_akshare_daily(
+    instrument: Instrument,
+    start: str,
+    end: str,
+) -> pd.DataFrame:
+    try:
+        import akshare as ak
+    except ImportError as exc:
+        raise DataError("AkShare is not installed") from exc
+
+    start_date = start.replace("-", "")
+    end_date = end.replace("-", "")
+    if instrument.code == "000300":
+        raw = _call_without_proxy(
+            ak.stock_zh_index_daily_em,
+            symbol="sh000300",
+            start_date=start_date,
+            end_date=end_date,
+        )
+        frame = _normalize_akshare_index(raw)
+    else:
+        raw = _call_without_proxy(
+            ak.fund_etf_hist_em,
+            symbol=instrument.code,
+            period="daily",
+            start_date=start_date,
+            end_date=end_date,
+            adjust="qfq",
+        )
+        frame = _normalize_akshare_etf(raw)
+
+    if frame.empty:
+        raise DataError(f"No AkShare data returned for {instrument.code}")
+    frame["code"] = instrument.code
+    frame["name"] = instrument.name
+    return frame
+
+
+def _normalize_akshare_etf(raw: pd.DataFrame) -> pd.DataFrame:
+    if raw is None or raw.empty:
+        return pd.DataFrame()
+    mapping = {
+        "日期": "date",
+        "开盘": "open",
+        "收盘": "close",
+        "最高": "high",
+        "最低": "low",
+        "成交量": "volume",
+        "成交额": "amount",
+        "振幅": "amplitude",
+        "涨跌幅": "pct_chg",
+        "涨跌额": "change",
+        "换手率": "turnover",
+    }
+    frame = raw.rename(columns=mapping)
+    return _normalize_ohlcv_frame(frame)
+
+
+def _normalize_akshare_index(raw: pd.DataFrame) -> pd.DataFrame:
+    if raw is None or raw.empty:
+        return pd.DataFrame()
+    frame = raw.copy()
+    frame["amplitude"] = (pd.to_numeric(frame["high"], errors="coerce") - pd.to_numeric(frame["low"], errors="coerce")) / pd.to_numeric(frame["close"], errors="coerce").shift(1) * 100
+    frame["pct_chg"] = pd.to_numeric(frame["close"], errors="coerce").pct_change() * 100
+    frame["change"] = pd.to_numeric(frame["close"], errors="coerce").diff()
+    frame["turnover"] = np.nan
+    return _normalize_ohlcv_frame(frame)
+
+
+def _normalize_ohlcv_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    required = ["date", "open", "close", "high", "low", "volume", "amount"]
+    if not set(required).issubset(frame.columns):
+        return pd.DataFrame()
+    frame = frame.copy()
+    frame["date"] = pd.to_datetime(frame["date"])
+    for column in KLINE_COLUMNS[1:]:
+        if column not in frame.columns:
+            frame[column] = np.nan
+        frame[column] = pd.to_numeric(frame[column], errors="coerce")
+    return frame.dropna(subset=["close"]).sort_values("date").set_index("date")[KLINE_COLUMNS[1:]]
+
+
+def _call_without_proxy(func, **kwargs):
+    proxy_keys = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"]
+    saved = {key: os.environ.get(key) for key in proxy_keys}
+    for key in proxy_keys:
+        os.environ.pop(key, None)
+    try:
+        return func(**kwargs)
+    finally:
+        for key, value in saved.items():
+            if value is not None:
+                os.environ[key] = value
 
 
 def fetch_eastmoney_daily(
@@ -137,18 +233,24 @@ def load_or_fetch_daily(
     if cached is not None and not refresh:
         return cached
 
-    try:
+    errors: list[str] = []
+    for provider, fetcher in (
+        ("akshare", fetch_akshare_daily),
+        ("eastmoney", fetch_eastmoney_daily),
+        ("tencent", fetch_tencent_daily),
+    ):
         try:
-            frame = fetch_eastmoney_daily(instrument, start, end)
-        except Exception:
-            frame = fetch_tencent_daily(instrument, start, end)
-        frame = _merge_with_cache(cached, frame)
-        frame.reset_index().to_csv(path, index=False)
-        return frame.loc[pd.Timestamp(start) : pd.Timestamp(end)]
-    except Exception:
-        if cached is not None:
-            return cached
-        raise
+            frame = fetcher(instrument, start, end)
+            frame["provider"] = provider
+            frame = _merge_with_cache(cached, frame)
+            frame.reset_index().to_csv(path, index=False)
+            return frame.loc[pd.Timestamp(start) : pd.Timestamp(end)]
+        except Exception as exc:
+            errors.append(f"{provider}: {exc}")
+
+    if cached is not None:
+        return cached
+    raise DataError(f"all providers failed for {instrument.code}: {' | '.join(errors)}")
 
 
 def _read_cached_frame(path: Path, start: str, end: str) -> pd.DataFrame:
