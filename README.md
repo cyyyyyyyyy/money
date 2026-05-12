@@ -58,7 +58,7 @@ uv run money-strategy backtest
 uv run money-strategy backtest --sentiment-file data/sentiment.csv
 ```
 
-项目内置了一份基于官方来源整理的政策/新闻事件样例：
+项目内置的事件表默认由 AkShare 热点候选审核生成：
 
 ```bash
 uv run money-strategy backtest --sentiment-file data/policy_events.real.csv

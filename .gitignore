@@ -5,7 +5,7 @@ __pycache__/
 *.egg-info/
 
 data/cache/
+data/*.backup.*.csv
 output/
 
 .DS_Store
-
